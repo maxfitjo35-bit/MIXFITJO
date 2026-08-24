@@ -1,0 +1,303 @@
+<script>
+let bookingModalCtx = { id: null, clientId: null, schedule: [], serviceIds: [] };
+const BOOKING_FILTERS = { text: '', active: '', service: '' };
+
+/* ============================================================
+   BOOKINGS LIST
+============================================================ */
+function renderBookings() {
+  const main = document.getElementById('view-container');
+  main.innerHTML = `
+    <div class="topbar-actions no-print" style="margin-bottom:14px;justify-content:space-between;display:flex;flex-wrap:wrap;gap:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;flex:1;">
+        <input id="bf-text" placeholder="${t('search')}" style="max-width:220px;" oninput="applyBookingFilters()" value="${BOOKING_FILTERS.text}">
+        <select id="bf-active" onchange="applyBookingFilters()" style="max-width:140px;">
+          <option value="">${t('all')}</option><option value="1" ${BOOKING_FILTERS.active==='1'?'selected':''}>${t('active')}</option><option value="0" ${BOOKING_FILTERS.active==='0'?'selected':''}>${t('inactive')}</option>
+        </select>
+        <select id="bf-service" onchange="applyBookingFilters()" style="max-width:180px;">
+          <option value="">${t('service')}</option>${STATE.services.map(s=>`<option value="${s.ID}" ${BOOKING_FILTERS.service===s.ID?'selected':''}>${escapeHtml(s.Name)}</option>`).join('')}
+        </select>
+      </div>
+      <button class="btn" onclick="openBookingModal()">+ ${t('addBooking')}</button>
+    </div>
+    <div class="glass panel">
+      <div class="table-scroll"><table><thead><tr>
+        <th>${t('client')}</th><th>${t('service')}</th><th>${t('sessionsCount')}</th><th>${t('startDate')}</th>
+        <th>${t('endDate')}</th><th>${t('status')}</th><th>${t('totalValue')}</th><th>${t('paid')}</th>
+        <th>${t('remaining')}</th><th class="no-print"></th>
+      </tr></thead><tbody id="bookings-body"></tbody></table></div>
+    </div>`;
+  renderBookingsTable();
+}
+
+function applyBookingFilters() {
+  BOOKING_FILTERS.text = document.getElementById('bf-text').value.trim().toLowerCase();
+  BOOKING_FILTERS.active = document.getElementById('bf-active').value;
+  BOOKING_FILTERS.service = document.getElementById('bf-service').value;
+  renderBookingsTable();
+}
+
+function renderBookingsTable() {
+  const rows = STATE.bookings.filter(b => {
+    const client = STATE.clients.find(c => c.ID === b.ClientID) || {};
+    if (BOOKING_FILTERS.text && !(client.Name||'').toLowerCase().includes(BOOKING_FILTERS.text) && !String(client.Phone||'').includes(BOOKING_FILTERS.text)) return false;
+    if (BOOKING_FILTERS.active === '1' && !b.Active) return false;
+    if (BOOKING_FILTERS.active === '0' && b.Active) return false;
+    if (BOOKING_FILTERS.service && (b.ServiceIDs||[]).indexOf(BOOKING_FILTERS.service) === -1) return false;
+    return true;
+  }).sort((a,b) => b.StartDate.localeCompare(a.StartDate));
+
+  const body = document.getElementById('bookings-body');
+  body.innerHTML = rows.map(b => {
+    const client = STATE.clients.find(c => c.ID === b.ClientID) || {};
+    const svcNames = (b.ServiceIDs||[]).map(sid => (STATE.services.find(s=>s.ID===sid)||{}).Name).filter(Boolean).join('، ');
+    return `<tr>
+      <td>${escapeHtml(client.Name||'-')}</td>
+      <td>${escapeHtml(svcNames)}</td>
+      <td>${b.SessionsCount}</td>
+      <td>${escapeHtml(b.StartDate)}</td>
+      <td>${escapeHtml(b.EndDate)}</td>
+      <td><span class="badge ${b.Active?'active':'cancelled'}">${b.Active?t('active'):t('inactive')}</span></td>
+      <td>${fmtMoney(b.TotalValue)}</td>
+      <td>${fmtMoney(b.Paid)}</td>
+      <td>${fmtMoney(b.Remaining)}</td>
+      <td class="table-actions no-print">
+        <div class="icon-btn whatsapp-btn" onclick="openWhatsAppMenu('${client.ID}','${b.ID}',['newClient','reminder','financial','postpone'])">${ICONS.whatsapp}</div>
+        <div class="icon-btn" title="${t('activateToggle')}" onclick="toggleBookingActiveUI('${b.ID}', ${!b.Active})">${ICONS.power}</div>
+        <div class="icon-btn" onclick="openBookingModal('${b.ID}')">${ICONS.edit}</div>
+        <div class="icon-btn" onclick="deleteBookingConfirm('${b.ID}')">${ICONS.trash}</div>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="10" class="empty-state">${t('noResults')}</td></tr>`;
+}
+
+function toggleBookingActiveUI(id, active) {
+  runServer('toggleBookingActive', [STATE.token, id, active], () => {
+    patchById(STATE.bookings, id, { Active: active });
+    showToast(STATE.lang==='ar'?'تم التحديث':'Updated');
+    renderCurrentView();
+  });
+}
+
+/* ============================================================
+   BOOKING MODAL — client search step (shows all clients by default,
+   search narrows the list), then 4 tabs
+============================================================ */
+function openBookingModal(bookingId) {
+  const booking = bookingId ? STATE.bookings.find(b => b.ID === bookingId) : null;
+  const draft = !booking ? loadDraft('booking_new') : null;
+  bookingModalCtx = {
+    id: booking ? booking.ID : null,
+    clientId: booking ? booking.ClientID : (draft ? draft.clientId : null),
+    schedule: booking ? (booking.ScheduleJSON || []).slice() : (draft ? draft.schedule : []),
+    serviceIds: booking ? (booking.ServiceIDs || []).slice() : (draft ? draft.serviceIds : [])
+  };
+  showModal(`
+    <h2>${bookingModalCtx.id ? t('edit') : t('addBooking')}</h2>
+    ${draft ? `<div class="draft-note">✎ ${STATE.lang==='ar'?'تم استرجاع بيانات محفوظة تلقائياً':'Auto-saved draft restored'}</div>` : ''}
+    <div id="booking-client-section"></div>
+    <div id="booking-form-section"></div>
+  `, true);
+  renderBookingClientSection();
+}
+
+function renderBookingClientSection() {
+  const el = document.getElementById('booking-client-section');
+  if (!bookingModalCtx.clientId) {
+    el.innerHTML = `
+      <div class="form-group">
+        <label>${t('selectClient')}</label>
+        <input id="booking-client-search" placeholder="${t('search')}" oninput="filterBookingClientResults()">
+      </div>
+      <div id="booking-client-results"></div>
+      <div class="modal-footer" style="margin-top:4px;">
+        <button class="btn secondary" onclick="closeModal()">${t('cancel')}</button>
+      </div>`;
+    filterBookingClientResults(); // shows all clients immediately — search only narrows
+    document.getElementById('booking-form-section').innerHTML = '';
+  } else {
+    const c = STATE.clients.find(cl => cl.ID === bookingModalCtx.clientId) || {};
+    const yesCount = c.HealthYesCount || 0;
+    const fileCount = c.HealthFilesCount || 0;
+    el.innerHTML = `
+      <div class="client-info-box">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <strong>${escapeHtml(c.Name || '')}</strong>
+          <span class="resend-link" onclick="changeBookingClient()">${STATE.lang==='ar'?'تغيير العميل':'Change client'}</span>
+        </div>
+        <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px 14px;color:var(--text-2);">
+          <div>${t('phone')}: <span style="color:var(--text-1)" dir="ltr">${escapeHtml(c.CountryCode||'')}${escapeHtml(String(c.Phone||''))}</span></div>
+          <div>${t('age')}: <span style="color:var(--text-1)">${c.Age !== undefined && c.Age !== '' ? c.Age : calcAge(c.DOB)}</span></div>
+          <div>${t('gender')}: <span style="color:var(--text-1)">${escapeHtml(c.Gender||'-')}</span></div>
+          <div>${t('clientType')}: <span style="color:var(--text-1)">${escapeHtml(c.ClientType||'-')}</span></div>
+        </div>
+        ${yesCount>0 ? `<div style="margin-top:8px;color:var(--warning);font-size:0.78rem;">⚠ ${yesCount} ${STATE.lang==='ar'?'إجابات "نعم" في الاستبيان الصحي':'"Yes" answers in health form'}</div>` : ''}
+        <div id="booking-client-files" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${fileCount ? `<span style="font-size:0.76rem;color:var(--text-2);">${t('loading')}</span>` : ''}</div>
+      </div>`;
+    renderBookingFormSection();
+    // File links need the full detail (URLs aren't in the light list) — fetched once per selection,
+    // fast and targeted, and kept exactly as before: visible right here in the booking modal.
+    if (fileCount) {
+      runServer('getClientDetail', [STATE.token, c.ID], detail => {
+        const filesEl = document.getElementById('booking-client-files');
+        if (filesEl && detail.HealthFilesJSON && detail.HealthFilesJSON.length) {
+          filesEl.innerHTML = detail.HealthFilesJSON.map(f => `<a href="${f.url}" target="_blank" rel="noopener" style="color:var(--accent);font-size:0.76rem;">📎 ${escapeHtml(f.name)}</a>`).join('');
+        } else if (filesEl) {
+          filesEl.innerHTML = '';
+        }
+      });
+    }
+  }
+}
+
+/** Shows clients even with an empty search box — full list by default, narrowed live as you type. */
+function filterBookingClientResults() {
+  const q = (document.getElementById('booking-client-search').value || '').trim().toLowerCase();
+  const el = document.getElementById('booking-client-results');
+  const source = STATE.clients.slice().sort((a, b) => String(b.CreatedAt).localeCompare(String(a.CreatedAt)));
+  const matches = q ? source.filter(c => (c.Name||'').toLowerCase().includes(q) || String(c.Phone||'').includes(q)) : source;
+  const limited = matches.slice(0, q ? 40 : 25);
+  el.innerHTML = limited.map(c => `<div class="client-search-result" onclick="selectBookingClient('${c.ID}')"><strong>${escapeHtml(c.Name)}</strong> — <span dir="ltr">${escapeHtml(String(c.Phone))}</span></div>`).join('') || `<div class="empty-state">${t('noResults')}</div>`;
+}
+function selectBookingClient(id) { bookingModalCtx.clientId = id; renderBookingClientSection(); saveBookingDraft(); }
+function changeBookingClient() { bookingModalCtx.clientId = null; renderBookingClientSection(); }
+
+function renderBookingFormSection() {
+  const b = bookingModalCtx.id ? STATE.bookings.find(x => x.ID === bookingModalCtx.id) : null;
+  const el = document.getElementById('booking-form-section');
+  el.innerHTML = `
+    <div class="tabs">
+      <div class="tab-btn active" data-btab="services" onclick="switchBookingTab('services')">${t('servicesTab')}</div>
+      <div class="tab-btn" data-btab="schedule" onclick="switchBookingTab('schedule')">${t('scheduleTab')}</div>
+      <div class="tab-btn" data-btab="dates" onclick="switchBookingTab('dates')">${t('datesTab')}</div>
+      <div class="tab-btn" data-btab="financial" onclick="switchBookingTab('financial')">${t('financialTab')}</div>
+    </div>
+
+    <div class="tab-panel active" id="btab-services">
+      <label style="display:block;margin-bottom:10px;color:var(--text-2);font-size:0.8rem;">${t('selectServices')}</label>
+      <div class="service-grid">
+        ${STATE.services.map(s => `<label class="checkbox-row"><input type="checkbox" value="${s.ID}" class="svc-check" ${bookingModalCtx.serviceIds.includes(s.ID)?'checked':''} onchange="onServiceCheckChange()"> ${escapeHtml(s.Name)} <span style="color:var(--text-2);font-size:0.75rem;">(${s.Cost} د.أ)</span></label>`).join('')}
+      </div>
+    </div>
+
+    <div class="tab-panel" id="btab-schedule">
+      <div id="schedule-rows"></div>
+      <button type="button" class="btn secondary sm" onclick="addScheduleRow()">${t('addDate')}</button>
+      <div style="margin-top:12px;color:var(--text-2);font-size:0.8rem;">${t('sessionsCount')}: <span id="sessions-count-display">0</span></div>
+    </div>
+
+    <div class="tab-panel" id="btab-dates">
+      <div class="form-row">
+        <div class="form-group"><label>${t('startDate')}</label><input id="bk-start" type="date" value="${b?b.StartDate:''}" onchange="saveBookingDraft()"></div>
+        <div class="form-group"><label>${t('endDate')}</label><input id="bk-end" value="${b?b.EndDate:''}" disabled readonly style="opacity:.6;"></div>
+      </div>
+      <label class="checkbox-row"><input type="checkbox" id="bk-active" ${(!b || b.Active)?'checked':''}> ${t('activateToggle')}</label>
+    </div>
+
+    <div class="tab-panel" id="btab-financial">
+      <div class="form-row">
+        <div class="form-group"><label>${t('totalValue')}</label><input id="bk-total" type="number" value="${b?b.TotalValue:0}" oninput="updateRemainingDisplay()"></div>
+        <div class="form-group"><label>${t('paid')}</label><input id="bk-paid" type="number" value="${b?b.Paid:0}" oninput="updateRemainingDisplay()"></div>
+      </div>
+      <div class="form-group"><label>${t('remaining')}</label><input id="bk-remaining" value="${b?b.Remaining:0}" disabled readonly style="opacity:.6;"></div>
+      <div class="form-group"><label>${t('notes')}</label><textarea id="bk-notes" onchange="saveBookingDraft()">${escapeHtml(b?b.Notes:'')}</textarea></div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${t('cancel')}</button>
+      <button class="btn secondary" onclick="openWhatsAppMenu(bookingModalCtx.clientId, bookingModalCtx.id, ['newClient','reminder','financial','postpone'])">${t('sendWhatsapp')}</button>
+      <button class="btn" id="booking-save-btn" onclick="saveBooking()">${t('save')}</button>
+    </div>
+  `;
+  renderScheduleRows();
+  updateRemainingDisplay();
+}
+
+function switchBookingTab(tab) {
+  document.querySelectorAll('#modal-body .tab-btn[data-btab]').forEach(bt => bt.classList.toggle('active', bt.dataset.btab === tab));
+  document.querySelectorAll('#modal-body .tab-panel').forEach(p => p.classList.toggle('active', p.id === 'btab-' + tab));
+}
+
+function renderScheduleRows() {
+  const el = document.getElementById('schedule-rows'); if (!el) return;
+  el.innerHTML = bookingModalCtx.schedule.map((row, i) => `
+    <div class="schedule-row">
+      <input type="date" value="${row.date||''}" onchange="updateScheduleField(${i},'date',this.value)">
+      <input type="time" value="${row.time||''}" onchange="updateScheduleField(${i},'time',this.value)">
+      <div class="icon-btn" onclick="removeScheduleRow(${i})">${ICONS.trash}</div>
+    </div>`).join('') || `<div class="empty-state">${t('noResults')}</div>`;
+  const cnt = document.getElementById('sessions-count-display'); if (cnt) cnt.textContent = bookingModalCtx.schedule.length;
+  updateEndDateDisplay();
+}
+function addScheduleRow() { bookingModalCtx.schedule.push({ date: '', time: '' }); renderScheduleRows(); saveBookingDraft(); }
+function removeScheduleRow(i) { bookingModalCtx.schedule.splice(i, 1); renderScheduleRows(); saveBookingDraft(); }
+function updateScheduleField(i, field, val) { bookingModalCtx.schedule[i][field] = val; if (field === 'date') updateEndDateDisplay(); saveBookingDraft(); }
+function updateEndDateDisplay() {
+  const dates = bookingModalCtx.schedule.map(r => r.date).filter(Boolean).sort();
+  const endEl = document.getElementById('bk-end');
+  if (endEl) endEl.value = dates.length ? dates[dates.length - 1] : '';
+}
+function updateRemainingDisplay() {
+  const total = Number(document.getElementById('bk-total')?.value) || 0;
+  const paid = Number(document.getElementById('bk-paid')?.value) || 0;
+  const rem = document.getElementById('bk-remaining'); if (rem) rem.value = (total - paid).toFixed(2);
+  saveBookingDraft();
+}
+function onServiceCheckChange() {
+  bookingModalCtx.serviceIds = Array.from(document.querySelectorAll('.svc-check:checked')).map(c => c.value);
+  saveBookingDraft();
+}
+function saveBookingDraft() {
+  if (bookingModalCtx.id) return;
+  saveDraft('booking_new', bookingModalCtx);
+}
+
+function saveBooking() {
+  if (!bookingModalCtx.clientId) { showToast(t('selectClientFirst'), 'error'); return; }
+  onServiceCheckChange();
+  const data = {
+    ClientID: bookingModalCtx.clientId,
+    ServiceIDs: bookingModalCtx.serviceIds,
+    ScheduleJSON: bookingModalCtx.schedule.filter(r => r.date),
+    SessionsCount: bookingModalCtx.schedule.filter(r => r.date).length,
+    StartDate: document.getElementById('bk-start').value,
+    TotalValue: Number(document.getElementById('bk-total').value) || 0,
+    Paid: Number(document.getElementById('bk-paid').value) || 0,
+    Notes: document.getElementById('bk-notes').value.trim(),
+    Active: document.getElementById('bk-active').checked
+  };
+  if (!data.ScheduleJSON.length) { showToast(STATE.lang==='ar'?'أضف موعداً واحداً على الأقل':'Add at least one session date', 'error'); return; }
+  if (!data.StartDate) { showToast(STATE.lang==='ar'?'حدد تاريخ البدء':'Set the start date', 'error'); return; }
+
+  const btn = document.getElementById('booking-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = STATE.lang==='ar'?'جاري الحفظ...':'Saving...'; }
+  showToast(STATE.lang==='ar'?'جاري الحفظ...':'Saving...');
+
+  const finish = () => { clearDraft('booking_new'); closeModal(); showToast(STATE.lang==='ar'?'تم الحفظ':'Saved'); renderCurrentView(); };
+
+  if (bookingModalCtx.id) {
+    runServer('updateBooking', [STATE.token, bookingModalCtx.id, data], res => {
+      if (res && res.success === false) { showToast(res.message, 'error'); resetBookingSaveBtn_(); return; }
+      patchById(STATE.bookings, bookingModalCtx.id, res.patch);
+      if (res.sessions) {
+        // this booking's sessions were fully replaced server-side — mirror that locally in one pass
+        STATE.sessions = STATE.sessions.filter(s => s.BookingID !== bookingModalCtx.id).concat(res.sessions);
+      }
+      if (res.clientId && res.clientTotals) patchById(STATE.clients, res.clientId, res.clientTotals);
+      finish();
+    });
+  } else {
+    runServer('addBooking', [STATE.token, data], res => {
+      if (res && res.success === false) { showToast(res.message, 'error'); resetBookingSaveBtn_(); return; }
+      STATE.bookings.push(res.booking);
+      STATE.sessions = STATE.sessions.concat(res.sessions || []);
+      if (res.clientTotals) patchById(STATE.clients, data.ClientID, res.clientTotals);
+      finish();
+    });
+  }
+}
+function resetBookingSaveBtn_() {
+  const btn = document.getElementById('booking-save-btn');
+  if (btn) { btn.disabled = false; btn.textContent = t('save'); }
+}
+</script>

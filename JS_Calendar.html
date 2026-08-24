@@ -1,0 +1,43 @@
+<script>
+let CAL_RANGE = 'week';
+
+function renderCalendar() {
+  const main = document.getElementById('view-container');
+  main.innerHTML = `
+    <div class="filter-bar no-print">
+      ${['today','week','month'].map(r => `<div class="filter-chip ${CAL_RANGE===r?'active':''}" onclick="setCalRange('${r}')">${t(r)}</div>`).join('')}
+    </div>
+    <div id="calendar-cards"></div>
+  `;
+  renderCalendarCards();
+}
+function setCalRange(r) { CAL_RANGE = r; renderCalendar(); }
+
+/** Pure client-side render from STATE (via the shared joinSessionsForRange helper) — no
+ *  network call, so it's always instantly in sync with anything changed elsewhere. */
+function renderCalendarCards() {
+  const rows = joinSessionsForRange(CAL_RANGE);
+  const el = document.getElementById('calendar-cards');
+  el.innerHTML = rows.map(r => `
+    <div class="glass panel" style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+        <div>
+          <strong>${escapeHtml(r.clientName)}</strong>
+          <div style="color:var(--text-2);font-size:0.8rem;" dir="ltr">${escapeHtml(r.clientPhone)}</div>
+        </div>
+        <div style="text-align:end;">
+          <div style="font-weight:700;">${escapeHtml(r.date)} &nbsp; ${escapeHtml(r.time)}</div>
+          <span class="badge ${SESSION_STATUS_CLASS[r.status]||''}">${escapeHtml(r.status)}</span>
+        </div>
+      </div>
+      <div style="margin-top:8px;color:var(--text-2);font-size:0.82rem;">${escapeHtml((r.services||[]).join('، '))}</div>
+      <div style="margin-top:10px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+        <div style="font-size:0.8rem;">${t('totalValue')}: ${fmtMoney(r.totalValue)} &nbsp;|&nbsp; ${t('paid')}: ${fmtMoney(r.paid)} &nbsp;|&nbsp; ${t('remaining')}: ${fmtMoney(r.remaining)}</div>
+        <select class="no-print" onchange="changeSessionStatus('${r.sessionId}', this.value)" style="max-width:150px;">
+          ${SESSION_STATUS.map(s => `<option value="${s}" ${s===r.status?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+  `).join('') || `<div class="glass panel empty-state">${t('noResults')}</div>`;
+}
+</script>

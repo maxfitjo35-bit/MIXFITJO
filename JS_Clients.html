@@ -1,0 +1,411 @@
+<script>
+const HEALTH_QUESTIONS = [
+  'هل كان لديك أي مشاكل قلبية وطلب منك الطبيب عدم ممارسة النشاط البدني؟',
+  'هل تشعر بألم في الصدر عند ممارسة النشاط البدني؟',
+  'هل شعرت بأي ألم في الصدر خلال الشهر الماضي بالرغم من عدم ممارستك للنشاط البدني؟',
+  'هل سبق وأن شعرت بدوار أو إغماء أو فقدان للاتزان؟',
+  'هل تعاني من أية مشاكل أو إصابات في العظام أو المفاصل يمكن أن تزداد سوءاً مع النشاط البدني؟',
+  'هل تعاني حالياً من ارتفاع ضغط الدم أو مشكلة قلبية تتطلب أدوية موصوفة؟',
+  'هل تعاني من السكري من النوع الأول الذي يتطلب علاج بالأنسولين؟',
+  'هل تعلم عن وجود أية أسباب أخرى تمنعك من ممارسة التمرين أو زيادة نشاطك البدني؟'
+];
+
+// STATE.clients now holds LIGHT client records (HealthFilesCount/HealthYesCount instead of the
+// full JSON blobs) for a fast list — clientModalCtx tracks the full detail once fetched for
+// whichever single client is currently open in the modal.
+let clientModalCtx = { id: null, files: [], healthDetailLoaded: true };
+const CLIENT_FILTERS = { text: '', gender: '', type: '', lead: '' };
+
+function renderClients() {
+  const main = document.getElementById('view-container');
+  const typeOptions = STATE.clientTypes.map(ty => `<option value="${escapeHtml(ty.Name)}">${escapeHtml(ty.Name)}</option>`).join('');
+  const leadOptions = LEAD_SOURCES.map(l => `<option value="${l}">${l}</option>`).join('');
+  main.innerHTML = `
+    <div class="topbar-actions no-print" style="margin-bottom:14px;justify-content:space-between;display:flex;flex-wrap:wrap;gap:10px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;flex:1;">
+        <input id="cf-text" placeholder="${t('search')}" style="max-width:220px;" oninput="applyClientFilters()" value="${CLIENT_FILTERS.text}">
+        <select id="cf-gender" onchange="applyClientFilters()" style="max-width:140px;"><option value="">${t('gender')}</option>${GENDERS.map(g=>`<option value="${g}" ${CLIENT_FILTERS.gender===g?'selected':''}>${g}</option>`).join('')}</select>
+        <select id="cf-type" onchange="applyClientFilters()" style="max-width:150px;"><option value="">${t('clientType')}</option>${typeOptions}</select>
+        <select id="cf-lead" onchange="applyClientFilters()" style="max-width:170px;"><option value="">${t('leadSource')}</option>${leadOptions}</select>
+      </div>
+      <button class="btn" onclick="openClientModal()">+ ${t('addClient')}</button>
+    </div>
+    <div class="glass panel">
+      <div class="table-scroll"><table><thead><tr>
+        <th>${t('name')}</th><th>${t('phone')}</th><th>${t('age')}</th><th>${t('gender')}</th>
+        <th>${t('clientType')}</th><th>${t('totalSpent')}</th><th class="no-print"></th>
+      </tr></thead><tbody id="clients-body"></tbody></table></div>
+    </div>`;
+  document.getElementById('cf-type').value = CLIENT_FILTERS.type;
+  document.getElementById('cf-lead').value = CLIENT_FILTERS.lead;
+  renderClientsTable();
+}
+
+function applyClientFilters() {
+  CLIENT_FILTERS.text = document.getElementById('cf-text').value.trim().toLowerCase();
+  CLIENT_FILTERS.gender = document.getElementById('cf-gender').value;
+  CLIENT_FILTERS.type = document.getElementById('cf-type').value;
+  CLIENT_FILTERS.lead = document.getElementById('cf-lead').value;
+  renderClientsTable();
+}
+
+function renderClientsTable() {
+  const rows = STATE.clients.filter(c => {
+    if (CLIENT_FILTERS.text && !(c.Name||'').toLowerCase().includes(CLIENT_FILTERS.text) && !String(c.Phone||'').includes(CLIENT_FILTERS.text)) return false;
+    if (CLIENT_FILTERS.gender && c.Gender !== CLIENT_FILTERS.gender) return false;
+    if (CLIENT_FILTERS.type && c.ClientType !== CLIENT_FILTERS.type) return false;
+    if (CLIENT_FILTERS.lead && c.LeadSource !== CLIENT_FILTERS.lead) return false;
+    return true;
+  });
+  const body = document.getElementById('clients-body');
+  body.innerHTML = rows.map(c => {
+    const type = STATE.clientTypes.find(ty => ty.Name === c.ClientType) || {};
+    const age = (c.Age !== undefined && c.Age !== '') ? c.Age : calcAge(c.DOB);
+    const fileCount = c.HealthFilesCount || 0;
+    return `<tr>
+      <td>${escapeHtml(c.Name)}</td>
+      <td dir="ltr">${escapeHtml(c.CountryCode||'')}${escapeHtml(String(c.Phone))}</td>
+      <td>${age === '' || age === undefined ? '-' : age}</td>
+      <td>${escapeHtml(c.Gender||'-')}</td>
+      <td><span class="type-badge" style="background:${type.Color||'#8a8f98'}">${escapeHtml(c.ClientType||'-')}</span></td>
+      <td>${fmtMoney(c.TotalSpent)}</td>
+      <td class="table-actions no-print">
+        <div class="icon-btn" title="${STATE.lang==='ar'?'ملفات العميل':'Client files'}" onclick="openClientFilesModal('${c.ID}')">${ICONS.paperclip}${fileCount ? `<span style="font-size:0.65rem;margin-inline-start:2px;">${fileCount}</span>` : ''}</div>
+        <div class="icon-btn whatsapp-btn" onclick="openWhatsAppMenu('${c.ID}',null,['newClient','reminder','financial','thanks'])">${ICONS.whatsapp}</div>
+        <div class="icon-btn" onclick='openClientModal(${JSON.stringify(c).replace(/'/g,"&apos;")})'>${ICONS.edit}</div>
+        <div class="icon-btn" onclick="deleteClientConfirm('${c.ID}')">${ICONS.trash}</div>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="7" class="empty-state">${t('noResults')}</td></tr>`;
+}
+
+function deleteClientConfirm(id) {
+  confirmAction(STATE.lang==='ar'?'سيتم حذف العميل وكل حجوزاته نهائياً. هل تريد المتابعة؟':'This will permanently delete the client and all their bookings. Continue?', () => {
+    runServer('deleteClient', [STATE.token, id], res => {
+      removeById(STATE.clients, id);
+      const removedBookingIds = (res && res.removedBookingIds) || [];
+      STATE.bookings = STATE.bookings.filter(b => removedBookingIds.indexOf(b.ID) === -1);
+      STATE.sessions = STATE.sessions.filter(s => removedBookingIds.indexOf(s.BookingID) === -1);
+      showToast(STATE.lang==='ar'?'تم الحذف':'Deleted');
+      renderCurrentView();
+    });
+  });
+}
+
+/* ============================================================
+   ADD / EDIT CLIENT MODAL
+============================================================ */
+function openClientModal(client, jumpToHealth) {
+  const clientId = client ? client.ID : null;
+  const draftKey = 'client_' + (clientId || 'new');
+  const draft = !clientId ? loadDraft(draftKey) : null;
+  const d = Object.assign({}, client || {}, draft || {});
+
+  clientModalCtx = { id: clientId, files: [], healthDetailLoaded: !clientId };
+
+  showModal(`
+    <h2>${client ? t('edit') : t('addClient')}</h2>
+    ${draft ? `<div class="draft-note">✎ ${STATE.lang==='ar'?'تم استرجاع بيانات محفوظة تلقائياً':'Auto-saved draft restored'}</div>` : ''}
+    <div class="tabs">
+      <div class="tab-btn ${jumpToHealth?'':'active'}" data-tab="personal" onclick="switchClientTab('personal')">${t('personalInfo')}</div>
+      <div class="tab-btn ${jumpToHealth?'active':''}" data-tab="health" onclick="switchClientTab('health')">${t('healthInfo')}</div>
+    </div>
+
+    <div class="tab-panel ${jumpToHealth?'':'active'}" id="tab-personal">
+      <div class="form-group"><label>${t('name')}</label><input id="cl-name" value="${escapeHtml(d.Name||'')}"></div>
+      <div class="form-row">
+        <div class="form-group"><label>${t('dob')}</label><input id="cl-dob" type="date" value="${d.DOB||''}" oninput="updateAgeDisplay(this.value)" onchange="updateAgeDisplay(this.value)"></div>
+        <div class="form-group"><label>${t('age')}</label><input id="cl-age-display" value="${d.Age !== undefined && d.Age !== '' ? d.Age : calcAge(d.DOB)}" disabled style="opacity:.6;" readonly></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>${t('phone')}</label><input id="cl-phone" value="${escapeHtml(String(d.Phone||''))}"></div>
+        <div class="form-group"><label>Country Code</label><input id="cl-cc" value="${escapeHtml(d.CountryCode||'+962')}"></div>
+      </div>
+      <div class="form-group"><label>${t('emergencyPhone')}</label><input id="cl-emphone" value="${escapeHtml(String(d.EmergencyPhone||''))}"></div>
+      <div class="form-row three">
+        <div class="form-group"><label>${t('gender')}</label><select id="cl-gender">${GENDERS.map(g=>`<option ${d.Gender===g?'selected':''}>${g}</option>`).join('')}</select></div>
+        <div class="form-group"><label>${t('maritalStatus')}</label><select id="cl-marital">${MARITAL.map(m=>`<option ${d.MaritalStatus===m?'selected':''}>${m}</option>`).join('')}</select></div>
+        <div class="form-group"><label>${t('leadSource')}</label><select id="cl-lead">${LEAD_SOURCES.map(l=>`<option ${d.LeadSource===l?'selected':''}>${l}</option>`).join('')}</select></div>
+      </div>
+      <div class="form-group"><label>${t('occupation')}</label><input id="cl-occupation" value="${escapeHtml(d.Occupation||'')}"></div>
+    </div>
+
+    <div class="tab-panel ${jumpToHealth?'active':''}" id="tab-health">
+      <div id="health-tab-inner">${clientId ? `<div class="loading-row">${t('loading')}</div>` : buildHealthQuestionsHtml([])}</div>
+      <div class="form-group" style="margin-top:16px;">
+        <label>${t('healthFiles')}</label>
+        <input type="file" id="health-file-input" accept="image/*,.pdf" multiple onchange="handleHealthFileSelect(event)">
+        <div id="health-files-list" style="margin-top:10px;">${clientId ? `<span style="font-size:0.78rem;color:var(--text-2);">${t('loading')}</span>` : ''}</div>
+      </div>
+    </div>
+
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${t('cancel')}</button>
+      <button class="btn" id="client-save-btn" onclick="saveClient()">${t('save')}</button>
+    </div>
+  `, true);
+
+  wireClientDraftAutosave(draftKey);
+
+  if (clientId) {
+    runServer('getClientDetail', [STATE.token, clientId], detail => {
+      clientModalCtx.files = detail.HealthFilesJSON || [];
+      clientModalCtx.healthDetailLoaded = true;
+      const inner = document.getElementById('health-tab-inner');
+      if (inner) inner.innerHTML = buildHealthQuestionsHtml(detail.HealthAnswersJSON || []);
+      renderHealthFilesList();
+    });
+  } else {
+    renderHealthFilesList();
+  }
+}
+
+function buildHealthQuestionsHtml(answers) {
+  return HEALTH_QUESTIONS.map((q, i) => {
+    const a = answers[i] || { answer: '', note: '' };
+    return `<div class="health-item">
+      <div class="q">${i+1}. ${q}</div>
+      <div class="yn">
+        <label><input type="radio" name="hy-${i}" value="نعم" ${a.answer==='نعم'?'checked':''}> ${t('yes')}</label>
+        <label><input type="radio" name="hy-${i}" value="لا" ${a.answer==='لا'?'checked':''}> ${t('no')}</label>
+      </div>
+      <input id="hn-${i}" placeholder="${t('notes')}" value="${escapeHtml(a.note||'')}">
+    </div>`;
+  }).join('');
+}
+
+function switchClientTab(tab) {
+  document.querySelectorAll('#modal-body .tab-btn[data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('#modal-body .tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+}
+
+function wireClientDraftAutosave(draftKey) {
+  if (clientModalCtx.id) return;
+  document.getElementById('modal-body').addEventListener('input', () => saveDraft(draftKey, collectClientFormData()));
+}
+
+/** Omits HealthAnswers entirely if the async detail fetch hasn't finished yet — this is a
+ *  deliberate safeguard, not an oversight: updateClient only touches HealthAnswersJSON when the
+ *  key is present in the payload, so leaving it out here means an accidental early save can
+ *  never wipe out a client's already-recorded health answers. */
+function collectClientFormData() {
+  const data = {
+    Name: document.getElementById('cl-name').value.trim(),
+    DOB: document.getElementById('cl-dob').value,
+    Phone: document.getElementById('cl-phone').value.trim(),
+    CountryCode: document.getElementById('cl-cc').value.trim(),
+    EmergencyPhone: document.getElementById('cl-emphone').value.trim(),
+    Gender: document.getElementById('cl-gender').value,
+    MaritalStatus: document.getElementById('cl-marital').value,
+    LeadSource: document.getElementById('cl-lead').value,
+    Occupation: document.getElementById('cl-occupation').value.trim()
+  };
+  if (clientModalCtx.healthDetailLoaded) {
+    data.HealthAnswers = HEALTH_QUESTIONS.map((q, i) => ({
+      question: q,
+      answer: (document.querySelector(`input[name="hy-${i}"]:checked`) || {}).value || '',
+      note: (document.getElementById('hn-' + i) || {}).value || ''
+    }));
+  }
+  return data;
+}
+
+function saveClient() {
+  const data = collectClientFormData();
+  if (!data.Name || !data.Phone) { showToast(STATE.lang==='ar'?'الاسم والهاتف مطلوبان':'Name and phone required','error'); return; }
+  const draftKey = 'client_' + (clientModalCtx.id || 'new');
+  const btn = document.getElementById('client-save-btn');
+  if (btn) { btn.disabled = true; btn.textContent = STATE.lang==='ar'?'جاري الحفظ...':'Saving...'; }
+  showToast(STATE.lang==='ar'?'جاري الحفظ...':'Saving...');
+
+  const finish = () => { clearDraft(draftKey); closeModal(); showToast(STATE.lang==='ar'?'تم الحفظ':'Saved'); renderCurrentView(); };
+
+  if (clientModalCtx.id) {
+    runServer('updateClient', [STATE.token, clientModalCtx.id, data], res => {
+      const patch = Object.assign({}, res.patch);
+      delete patch.HealthAnswersJSON; // not part of the light list — HealthFilesCount/HealthYesCount below cover it
+      patch.HealthFilesCount = clientModalCtx.files.length;
+      if (data.HealthAnswers) patch.HealthYesCount = data.HealthAnswers.filter(a => a.answer === 'نعم').length;
+      patchById(STATE.clients, clientModalCtx.id, patch);
+      finish();
+    });
+  } else {
+    runServer('addClient', [STATE.token, data], res => {
+      clientModalCtx.id = res.id;
+      const light = Object.assign({}, res.client);
+      light.HealthFilesCount = clientModalCtx.files.length;
+      light.HealthYesCount = (data.HealthAnswers || []).filter(a => a.answer === 'نعم').length;
+      delete light.HealthAnswersJSON; delete light.HealthFilesJSON;
+      upsertById(STATE.clients, light);
+      finish();
+    });
+  }
+}
+
+/* ---- Health file uploads — compressed client-side before upload (a raw phone photo can be
+   several MB; resizing to a reasonable max dimension and re-encoding as JPEG cuts that down to a
+   few hundred KB, which is the single biggest lever on upload speed). PDFs pass through as-is. ---- */
+function handleHealthFileSelect(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  showToast(STATE.lang==='ar'?'جاري تجهيز الملفات...':'Preparing files...');
+  ensureClientSavedThen_(() => {
+    files.forEach(file => processAndUploadHealthFile_(file, clientModalCtx.id, updatedFiles => {
+      clientModalCtx.files = updatedFiles;
+      renderHealthFilesList();
+    }));
+    event.target.value = '';
+  });
+}
+
+function ensureClientSavedThen_(callback) {
+  if (clientModalCtx.id) { callback(); return; }
+  const data = collectClientFormData();
+  if (!data.Name || !data.Phone) { showToast(STATE.lang==='ar'?'أدخل الاسم والهاتف أولاً قبل رفع الملفات':'Enter name and phone before uploading files','error'); return; }
+  runServer('addClient', [STATE.token, data], res => {
+    clientModalCtx.id = res.id;
+    clientModalCtx.healthDetailLoaded = true; // a brand-new client has no prior health data to lose
+    const light = Object.assign({}, res.client);
+    light.HealthFilesCount = 0;
+    light.HealthYesCount = (data.HealthAnswers || []).filter(a => a.answer === 'نعم').length;
+    delete light.HealthAnswersJSON; delete light.HealthFilesJSON;
+    upsertById(STATE.clients, light);
+    callback();
+  });
+}
+
+/* ---- Generic file processing/upload — shared by the edit-client modal's Health tab AND the
+   standalone "Client Files" quick-view modal below, so there's one upload pipeline, not two. ---- */
+function processAndUploadHealthFile_(file, clientId, onUploaded) {
+  if (file.type && file.type.indexOf('image/') === 0) {
+    compressImageFile_(file, (base64, mimeType) => uploadHealthFileBase64_(base64, mimeType, file.name, clientId, onUploaded));
+  } else {
+    const reader = new FileReader();
+    reader.onload = () => uploadHealthFileBase64_(reader.result.split(',')[1], file.type || 'application/octet-stream', file.name, clientId, onUploaded);
+    reader.readAsDataURL(file);
+  }
+}
+
+function compressImageFile_(file, callback) {
+  const MAX_DIM = 1600;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      let w = img.width, h = img.height;
+      if (w > MAX_DIM || h > MAX_DIM) {
+        if (w > h) { h = Math.round(h * MAX_DIM / w); w = MAX_DIM; }
+        else { w = Math.round(w * MAX_DIM / h); h = MAX_DIM; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      callback(dataUrl.split(',')[1], 'image/jpeg');
+    };
+    img.onerror = () => callback(e.target.result.split(',')[1], file.type || 'image/jpeg'); // fallback: upload original
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function uploadHealthFileBase64_(base64, mimeType, fileName, clientId, onUploaded) {
+  showToast(STATE.lang==='ar'?'جاري رفع الملف...':'Uploading file...');
+  runServer('uploadHealthFile', [STATE.token, clientId, base64, mimeType, fileName], res => {
+    patchById(STATE.clients, clientId, { HealthFilesCount: res.files.length });
+    renderClientsTable();
+    showToast(STATE.lang==='ar'?'تم رفع الملف':'File uploaded');
+    if (onUploaded) onUploaded(res.files);
+  });
+}
+
+function removeHealthFileGeneric_(clientId, fileId, onRemoved) {
+  confirmAction(t('confirmDeleteMsg'), () => {
+    runServer('deleteHealthFile', [STATE.token, clientId, fileId], res => {
+      patchById(STATE.clients, clientId, { HealthFilesCount: res.files.length });
+      renderClientsTable();
+      showToast(STATE.lang==='ar'?'تم الحذف':'Deleted');
+      if (onRemoved) onRemoved(res.files);
+    });
+  });
+}
+
+/* ---- Health tab file list (inside the full edit-client modal) ---- */
+function renderHealthFilesList() {
+  const el = document.getElementById('health-files-list');
+  if (!el) return;
+  el.innerHTML = (clientModalCtx.files || []).map(f => `
+    <div class="file-chip">
+      <a class="file-chip-link" href="${f.url}" target="_blank" rel="noopener">
+        <span class="file-chip-icon">${ICONS.file}</span>
+        <span class="file-chip-name">${escapeHtml(f.name)}</span>
+      </a>
+      <div class="icon-btn" style="width:24px;height:24px;flex-shrink:0;" onclick="removeHealthFile('${f.id}')">${ICONS.trash}</div>
+    </div>`).join('') || `<span style="font-size:0.78rem;color:var(--text-2);">${t('noResults')}</span>`;
+}
+function removeHealthFile(fileId) {
+  removeHealthFileGeneric_(clientModalCtx.id, fileId, updatedFiles => {
+    clientModalCtx.files = updatedFiles;
+    renderHealthFilesList();
+  });
+}
+
+/* ============================================================
+   STANDALONE "CLIENT FILES" QUICK-VIEW MODAL — always available per
+   client from the table (even with zero files, so a first file can be
+   uploaded right from here) — view/open/download or delete any file,
+   without going through the full edit-client modal.
+============================================================ */
+let filesModalCtx = { clientId: null, files: [] };
+
+function openClientFilesModal(clientId) {
+  const client = STATE.clients.find(c => c.ID === clientId) || {};
+  filesModalCtx = { clientId: clientId, files: [] };
+  showModal(`
+    <h2>${STATE.lang==='ar'?'ملفات العميل':'Client Files'} — ${escapeHtml(client.Name||'')}</h2>
+    <div id="quick-files-list"><div class="loading-row">${t('loading')}</div></div>
+    <div class="form-group" style="margin-top:16px;">
+      <label>${t('uploadFile')}</label>
+      <input type="file" id="quick-file-input" accept="image/*,.pdf" multiple onchange="handleQuickFileUpload(event)">
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${t('close')}</button>
+    </div>
+  `);
+  runServer('getClientDetail', [STATE.token, clientId], detail => {
+    filesModalCtx.files = detail.HealthFilesJSON || [];
+    renderClientFilesList();
+  });
+}
+
+function renderClientFilesList() {
+  const el = document.getElementById('quick-files-list');
+  if (!el) return;
+  el.innerHTML = (filesModalCtx.files || []).map(f => `
+    <div class="file-chip">
+      <a class="file-chip-link" href="${f.url}" target="_blank" rel="noopener">
+        <span class="file-chip-icon">${ICONS.file}</span>
+        <span class="file-chip-name">${escapeHtml(f.name)}</span>
+      </a>
+      <div class="icon-btn" style="width:24px;height:24px;flex-shrink:0;" onclick="removeQuickFile('${f.id}')">${ICONS.trash}</div>
+    </div>`).join('') || `<div class="empty-state">${STATE.lang==='ar'?'لا توجد ملفات بعد — ارفع أول ملف أدناه':'No files yet — upload the first one below'}</div>`;
+}
+
+function handleQuickFileUpload(event) {
+  const files = Array.from(event.target.files || []);
+  if (!files.length) return;
+  showToast(STATE.lang==='ar'?'جاري تجهيز الملفات...':'Preparing files...');
+  files.forEach(file => processAndUploadHealthFile_(file, filesModalCtx.clientId, updatedFiles => {
+    filesModalCtx.files = updatedFiles;
+    renderClientFilesList();
+  }));
+  event.target.value = '';
+}
+
+function removeQuickFile(fileId) {
+  removeHealthFileGeneric_(filesModalCtx.clientId, fileId, updatedFiles => {
+    filesModalCtx.files = updatedFiles;
+    renderClientFilesList();
+  });
+}
+</script>

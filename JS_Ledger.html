@@ -1,0 +1,39 @@
+<script>
+/** Mirrors the backend's getClientLedger logic in pure JS so this screen is instantly
+ *  reactive to any change made anywhere else in the app, with zero network calls. */
+function computeLedgerJS() {
+  return STATE.clients.map(c => {
+    const type = STATE.clientTypes.find(t => t.Name === c.ClientType) || {};
+    const clientBookings = STATE.bookings.filter(b => String(b.ClientID) === String(c.ID));
+    const activeBooking = clientBookings.filter(b => b.Active).sort((a, b) => (b.EndDate||'').localeCompare(a.EndDate||''))[0];
+    return {
+      ID: c.ID, Name: c.Name, Phone: c.Phone, CountryCode: c.CountryCode,
+      ClientType: c.ClientType, TypeColor: type.Color || '#8a8f98',
+      TotalSpent: c.TotalSpent, VisitsCount: c.VisitsCount,
+      LastEndDate: activeBooking ? activeBooking.EndDate : ''
+    };
+  }).sort((a, b) => Number(b.TotalSpent) - Number(a.TotalSpent));
+}
+
+function renderLedger() {
+  const main = document.getElementById('view-container');
+  main.innerHTML = `
+    <div class="glass panel">
+      <div class="table-scroll"><table><thead><tr>
+        <th>${t('name')}</th><th>${t('phone')}</th><th>${t('clientType')}</th>
+        <th>${t('totalSpent')}</th><th>${t('visits')}</th><th>${t('endDate')}</th><th class="no-print"></th>
+      </tr></thead><tbody id="ledger-body"></tbody></table></div>
+    </div>`;
+  const rows = computeLedgerJS();
+  const body = document.getElementById('ledger-body');
+  body.innerHTML = rows.map(r => `<tr>
+    <td>${escapeHtml(r.Name)}</td>
+    <td dir="ltr">${escapeHtml(r.CountryCode||'')}${escapeHtml(String(r.Phone||''))}</td>
+    <td><span class="type-badge" style="background:${r.TypeColor}">${escapeHtml(r.ClientType)}</span></td>
+    <td>${fmtMoney(r.TotalSpent)}</td>
+    <td>${r.VisitsCount}</td>
+    <td>${escapeHtml(r.LastEndDate||'-')}</td>
+    <td class="table-actions no-print"><div class="icon-btn whatsapp-btn" onclick="openWhatsAppMenu('${r.ID}',null,['thanks'])">${ICONS.whatsapp}</div></td>
+  </tr>`).join('') || `<tr><td colspan="7" class="empty-state">${t('noResults')}</td></tr>`;
+}
+</script>

@@ -1,0 +1,159 @@
+<script>
+const THEME_META = {
+  'official':       { nameKey: 'themeOfficial', colors: ['#ffffff', '#eef2f6', '#0B5394'] },
+  'obsidian-red':   { nameKey: 'themeObsidian', colors: ['#050505', '#200a0d', '#D5212C'] },
+  'midnight-steel': { nameKey: 'themeMidnight', colors: ['#090c11', '#1a2130', '#4f7dfb'] },
+  'crimson-frost':  { nameKey: 'themeCrimson',  colors: ['#03050a', '#170a16', '#E2314B'] },
+  'charcoal-glass': { nameKey: 'themeCharcoal', colors: ['#2b2d31', '#3d4048', '#D5212C'] },
+  'ajyal':          { nameKey: 'themeAjyal',    colors: ['#05101f', '#0e3358', '#1476D2'] }
+};
+
+function renderSettings() {
+  const main = document.getElementById('view-container');
+  main.innerHTML = `
+    <div class="tabs no-print">
+      <div class="tab-btn active" data-stab="types" onclick="switchSettingsTab('types')">${t('settingsClientTypes')}</div>
+      <div class="tab-btn" data-stab="services" onclick="switchSettingsTab('services')">${t('settingsServices')}</div>
+      <div class="tab-btn" data-stab="general" onclick="switchSettingsTab('general')">${t('settingsGeneral')}</div>
+    </div>
+
+    <div class="tab-panel active" id="stab-types">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;"><button class="btn sm" onclick="openTypeModal()">${t('addType')}</button></div>
+      <div class="glass panel"><div class="table-scroll"><table><thead><tr>
+        <th>${t('name')}</th><th>${t('minSpend')}</th><th>${t('color')}</th><th></th>
+      </tr></thead><tbody id="types-body"></tbody></table></div></div>
+    </div>
+
+    <div class="tab-panel" id="stab-services">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px;"><button class="btn sm" onclick="openServiceModal()">${t('addService')}</button></div>
+      <div class="glass panel"><div class="table-scroll"><table><thead><tr>
+        <th>${t('name')}</th><th>${t('cost')}</th><th>${t('duration')}</th><th></th>
+      </tr></thead><tbody id="services-body"></tbody></table></div>
+    </div>
+
+    <div class="tab-panel" id="stab-general">
+      <div class="glass panel">
+        <div class="form-group">
+          <label>${t('appearance')}</label>
+          <div class="theme-grid" id="theme-grid"></div>
+        </div>
+        <div class="form-group" style="margin-top:22px;">
+          <label>${STATE.lang==='ar'?'لغة التطبيق':'App Language'}</label>
+          <button class="btn secondary sm" onclick="toggleLang()">${STATE.lang==='ar'?'English':'العربية'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  renderTypesTable();
+  renderServicesTable();
+  renderThemeGrid();
+}
+
+function switchSettingsTab(tab) {
+  document.querySelectorAll('.tab-btn[data-stab]').forEach(b => b.classList.toggle('active', b.dataset.stab === tab));
+  document.querySelectorAll('#view-container .tab-panel').forEach(p => p.classList.toggle('active', p.id === 'stab-' + tab));
+}
+
+/* ---- Appearance: 5 cold glass themes — colors built directly inline in one pass
+   (no post-DOM lookup step) so this can never render blank. ---- */
+function renderThemeGrid() {
+  const grid = document.getElementById('theme-grid');
+  if (!grid) return;
+  grid.innerHTML = THEMES.map(key => {
+    const meta = THEME_META[key];
+    const c = meta.colors;
+    return `<div class="theme-swatch ${STATE.theme===key?'active':''}" onclick="setTheme('${key}'); renderThemeGrid();">
+      <div class="preview" style="background:linear-gradient(135deg, ${c[0]}, ${c[1]} 55%, ${c[2]});"></div>
+      <div class="name">${t(meta.nameKey)}</div>
+    </div>`;
+  }).join('');
+}
+
+/* ---- Client Types ---- */
+function renderTypesTable() {
+  const body = document.getElementById('types-body'); if (!body) return;
+  body.innerHTML = STATE.clientTypes.slice().sort((a,b)=>Number(a.MinSpend)-Number(b.MinSpend)).map(ty => `
+    <tr>
+      <td>${escapeHtml(ty.Name)}</td>
+      <td>${fmtMoney(ty.MinSpend)}</td>
+      <td><span style="display:inline-block;width:18px;height:18px;border-radius:5px;background:${ty.Color};vertical-align:middle;"></span></td>
+      <td class="table-actions">
+        <div class="icon-btn" onclick='openTypeModal(${JSON.stringify(ty).replace(/'/g,"&apos;")})'>${ICONS.edit}</div>
+        <div class="icon-btn" onclick="deleteType('${ty.ID}')">${ICONS.trash}</div>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="4" class="empty-state">${t('noResults')}</td></tr>`;
+}
+function openTypeModal(ty) {
+  showModal(`
+    <h2>${ty ? t('edit') : t('addType')}</h2>
+    <div class="form-group"><label>${t('name')}</label><input id="ty-name" value="${ty?escapeHtml(ty.Name):''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>${t('minSpend')}</label><input id="ty-min" type="number" value="${ty?ty.MinSpend:0}"></div>
+      <div class="form-group"><label>${t('color')}</label><input id="ty-color" type="color" value="${ty?ty.Color:'#D5212C'}"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${t('cancel')}</button>
+      <button class="btn" onclick="saveType(${ty?`'${ty.ID}'`:'null'})">${t('save')}</button>
+    </div>`);
+}
+function saveType(id) {
+  const data = { Name: document.getElementById('ty-name').value.trim(), MinSpend: Number(document.getElementById('ty-min').value)||0, Color: document.getElementById('ty-color').value };
+  if (!data.Name) { showToast(STATE.lang==='ar'?'الاسم مطلوب':'Name required','error'); return; }
+  const finish = () => { closeModal(); showToast(STATE.lang==='ar'?'تم الحفظ':'Saved'); renderCurrentView(); };
+  if (id) runServer('updateClientType', [STATE.token, id, data], () => { patchById(STATE.clientTypes, id, data); finish(); });
+  else runServer('addClientType', [STATE.token, data], res => { upsertById(STATE.clientTypes, res.type); finish(); });
+}
+function deleteType(id) {
+  confirmAction(t('confirmDeleteMsg'), () => {
+    runServer('deleteClientType', [STATE.token, id], () => {
+      removeById(STATE.clientTypes, id);
+      showToast(STATE.lang==='ar'?'تم الحذف':'Deleted');
+      renderCurrentView();
+    });
+  });
+}
+
+/* ---- Services ---- */
+function renderServicesTable() {
+  const body = document.getElementById('services-body'); if (!body) return;
+  body.innerHTML = STATE.services.map(s => `
+    <tr>
+      <td>${escapeHtml(s.Name)}</td>
+      <td>${fmtMoney(s.Cost)}</td>
+      <td>${escapeHtml(String(s.DurationMinutes))}</td>
+      <td class="table-actions">
+        <div class="icon-btn" onclick='openServiceModal(${JSON.stringify(s).replace(/'/g,"&apos;")})'>${ICONS.edit}</div>
+        <div class="icon-btn" onclick="deleteServiceSetting('${s.ID}')">${ICONS.trash}</div>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="4" class="empty-state">${t('noResults')}</td></tr>`;
+}
+function openServiceModal(s) {
+  showModal(`
+    <h2>${s ? t('edit') : t('addService')}</h2>
+    <div class="form-group"><label>${t('name')}</label><input id="sv-name" value="${s?escapeHtml(s.Name):''}"></div>
+    <div class="form-row">
+      <div class="form-group"><label>${t('cost')}</label><input id="sv-cost" type="number" value="${s?s.Cost:0}"></div>
+      <div class="form-group"><label>${t('duration')}</label><input id="sv-duration" type="number" value="${s?s.DurationMinutes:60}"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn secondary" onclick="closeModal()">${t('cancel')}</button>
+      <button class="btn" onclick="saveServiceSetting(${s?`'${s.ID}'`:'null'})">${t('save')}</button>
+    </div>`);
+}
+function saveServiceSetting(id) {
+  const data = { Name: document.getElementById('sv-name').value.trim(), Cost: Number(document.getElementById('sv-cost').value)||0, DurationMinutes: Number(document.getElementById('sv-duration').value)||60 };
+  if (!data.Name) { showToast(STATE.lang==='ar'?'الاسم مطلوب':'Name required','error'); return; }
+  const finish = () => { closeModal(); showToast(STATE.lang==='ar'?'تم الحفظ':'Saved'); renderCurrentView(); };
+  if (id) runServer('updateService', [STATE.token, id, data], () => { patchById(STATE.services, id, data); finish(); });
+  else runServer('addService', [STATE.token, data], res => { upsertById(STATE.services, res.service); finish(); });
+}
+function deleteServiceSetting(id) {
+  confirmAction(t('confirmDeleteMsg'), () => {
+    runServer('deleteService', [STATE.token, id], () => {
+      removeById(STATE.services, id);
+      showToast(STATE.lang==='ar'?'تم الحذف':'Deleted');
+      renderCurrentView();
+    });
+  });
+}
+</script>

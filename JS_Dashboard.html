@@ -1,0 +1,121 @@
+<script>
+function renderDashboard() {
+  const main = document.getElementById('view-container');
+  main.innerHTML = `
+    <div class="filter-bar no-print">
+      ${['today','week','month','year'].map(r => `<div class="filter-chip ${STATE.currentRange===r?'active':''}" onclick="setRange('${r}')">${t(r)}</div>`).join('')}
+    </div>
+    <div class="kpi-grid">
+      <div class="glass kpi-card"><div class="label">${t('totalBookings')}</div><div class="value" id="kpi-total">—</div></div>
+      <div class="glass kpi-card"><div class="label">${t('inProgress')}</div><div class="value" id="kpi-inprogress">—</div></div>
+      <div class="glass kpi-card"><div class="label">${t('revenue')}</div><div class="value accent" id="kpi-revenue">—</div></div>
+      <div class="glass kpi-card"><div class="label">${t('attendanceRate')}</div><div class="value" id="kpi-attendance">—</div><div class="sub" id="kpi-completion"></div></div>
+    </div>
+    <div class="charts-grid">
+      <div class="glass panel"><div class="chart-box"><canvas id="pie-chart"></canvas></div></div>
+      <div class="glass panel"><div class="chart-box"><canvas id="bar-chart"></canvas></div></div>
+    </div>
+    <div class="glass panel">
+      <h2 style="font-size:1rem;margin-bottom:12px;">${t('appointmentsTable')}</h2>
+      <div class="table-scroll"><table><thead><tr>
+        <th>${t('client')}</th><th>${t('date')}</th><th>${t('time')}</th><th>${t('service')}</th>
+        <th>${t('status')}</th><th class="no-print"></th>
+      </tr></thead><tbody id="dash-sessions-body"></tbody></table></div>
+    </div>
+    <div class="glass panel">
+      <h2 style="font-size:1rem;margin-bottom:12px;color:var(--warning);">⚠ ${t('expiringSoon')}</h2>
+      <div class="table-scroll"><table><thead><tr>
+        <th>${t('client')}</th><th>${t('phone')}</th><th>${t('endDate')}</th><th class="no-print"></th>
+      </tr></thead><tbody id="dash-expiring-body"></tbody></table></div>
+    </div>
+  `;
+  // Everything below is a pure in-memory computation over STATE — zero server calls, and
+  // therefore always reflects the latest data the instant anything changes anywhere in the app.
+  applyDashboardData(computeDashboardDataJS(STATE.currentRange));
+  renderDashboardSessionsTable();
+  renderExpiringTable();
+}
+
+/** Switching the filter chip is a pure client-side recompute — instant, no network call at all. */
+function setRange(r) {
+  STATE.currentRange = r;
+  renderDashboard();
+}
+
+function applyDashboardData(d) {
+  document.getElementById('kpi-total').textContent = d.totalBookings;
+  document.getElementById('kpi-inprogress').textContent = d.inProgress;
+  document.getElementById('kpi-revenue').textContent = fmtMoney(d.revenue);
+  document.getElementById('kpi-attendance').textContent = d.attendanceRate + '%';
+  document.getElementById('kpi-completion').textContent = t('completionRate') + ': ' + d.completionRate + '%';
+  drawPieChart(d.pieLabels, d.pieValues);
+  drawBarChart(d.barLabels, d.barValues);
+}
+
+function drawPieChart(labels, values) {
+  const ctx = document.getElementById('pie-chart'); if (!ctx) return;
+  if (STATE.charts.pie) STATE.charts.pie.destroy();
+  const colors = ['#D5212C','#FF4B5C','#FBBF24','#4f7dfb','#34d399','#b98bff','#f87171','#a89a9b','#7ea2ff'];
+  const textColor = isLightTheme() ? '#3a3d42' : '#cfc5c6';
+  STATE.charts.pie = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels: labels.length?labels:[t('noResults')], datasets: [{ data: values.length?values:[1], backgroundColor: colors, borderWidth: 0 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { position: 'bottom', labels: { color: textColor, boxWidth: 12, font: { size: 11 } } },
+        title: { display: true, text: STATE.lang==='ar'?'توزيع أنواع الخدمات':'Service Type Distribution', color: isLightTheme()?'#1a0d0e':'#f5f2f2' }
+      }
+    }
+  });
+}
+
+function drawBarChart(labels, values) {
+  const ctx = document.getElementById('bar-chart'); if (!ctx) return;
+  if (STATE.charts.bar) STATE.charts.bar.destroy();
+  const isLight = isLightTheme();
+  STATE.charts.bar = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ label: t('revenue'), data: values, backgroundColor: '#D5212C', borderRadius: 6, maxBarThickness: 36 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        title: { display: true, text: STATE.lang==='ar'?'الحجز والإيراد':'Bookings & Revenue', color: isLight?'#1a0d0e':'#f5f2f2' }
+      },
+      scales: {
+        x: { ticks: { color: isLight ? '#6b5556' : '#a89a9b' }, grid: { display: false } },
+        y: { ticks: { color: isLight ? '#6b5556' : '#a89a9b' }, grid: { color: 'rgba(150,150,150,0.1)' } }
+      }
+    }
+  });
+}
+
+/** The appointments-calendar table for sessions (not the bookings table) — reacts live to
+ *  the same range filter as the KPI cards above, all computed from STATE.sessions. */
+function renderDashboardSessionsTable() {
+  const rows = joinSessionsForRange(STATE.currentRange);
+  const body = document.getElementById('dash-sessions-body');
+  body.innerHTML = rows.map(r => `<tr>
+      <td>${escapeHtml(r.clientName)}</td>
+      <td>${escapeHtml(r.date)}</td>
+      <td>${escapeHtml(r.time)}</td>
+      <td>${escapeHtml((r.services||[]).join('، '))}</td>
+      <td class="no-print"><select onchange="changeSessionStatus('${r.sessionId}', this.value)">
+        ${SESSION_STATUS.map(s => `<option value="${s}" ${s===r.status?'selected':''}>${s}</option>`).join('')}
+      </select></td>
+      <td class="table-actions no-print">
+        <div class="icon-btn whatsapp-btn" onclick="openWhatsAppMenu('${r.clientId}','${r.bookingId}',['reminder','financial','postpone'])">${ICONS.whatsapp}</div>
+      </td>
+    </tr>`).join('') || `<tr><td colspan="6" class="empty-state">${t('noResults')}</td></tr>`;
+}
+
+function renderExpiringTable() {
+  const body = document.getElementById('dash-expiring-body');
+  if (!body) return;
+  body.innerHTML = computeExpiringBookingsJS().map(b => `<tr>
+    <td>${escapeHtml(b.ClientName)}</td><td dir="ltr">${escapeHtml(String(b.ClientPhone||''))}</td><td>${escapeHtml(b.EndDate)}</td>
+    <td class="table-actions no-print"><div class="icon-btn whatsapp-btn" onclick="openWhatsAppMenu('${b.ClientID}','${b.ID}',['expiry'])">${ICONS.whatsapp}</div></td>
+  </tr>`).join('') || `<tr><td colspan="4" class="empty-state">${t('noResults')}</td></tr>`;
+}
+</script>
